@@ -1,0 +1,14 @@
+[package]
+name = "patina-shell"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-3-Clause"
+description = "A layer-shell host for egui, drawn in software: the base of the Patina desktop's bar, launcher and other shell pieces"
+repository = "https://github.com/Sector-F-Labs/patina-desktop"
+
+[lib]
+name = "patina_shell"
+
+[dependencies]
+egui = "0.35"
+smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "xkbcommon"] }
