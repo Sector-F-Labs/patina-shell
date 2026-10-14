@@ -5,6 +5,7 @@
 
 pub mod host;
 pub mod raster;
+mod scale;
 pub mod toplevels;
 
 pub use host::{Anchor, Host, KeyboardInteractivity, Layer, Options, Shell};

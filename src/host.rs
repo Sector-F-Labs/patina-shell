@@ -43,7 +43,15 @@ use smithay_client_toolkit::{
 pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 
 use crate::raster::Painter;
+use crate::scale::{FractionalData, NoEvents};
 use crate::toplevels::{ManagerData, Toplevel, ToplevelRequest, Toplevels};
+use smithay_client_toolkit::reexports::protocols::wp::{
+    fractional_scale::v1::client::{
+        wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+        wp_fractional_scale_v1::WpFractionalScaleV1,
+    },
+    viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
+};
 
 /// What a host draws.
 pub trait Shell: 'static {
@@ -99,6 +107,11 @@ struct Surface {
     width: u32,
     height: u32,
     scale: i32,
+    /// The exact scale, in 120ths, and the viewport that lets the buffer
+    /// be drawn at it; without them, `scale`.
+    scale_120: Option<u32>,
+    fractional: Option<WpFractionalScaleV1>,
+    viewport: Option<WpViewport>,
     configured: bool,
     dirty: bool,
     frame_pending: bool,
@@ -106,6 +119,17 @@ struct Surface {
     events: Vec<egui::Event>,
     /// Whether this surface has the keyboard.
     focused: bool,
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        if let Some(f) = self.fractional.take() {
+            f.destroy();
+        }
+        if let Some(v) = self.viewport.take() {
+            v.destroy();
+        }
+    }
 }
 
 pub struct Host<S: Shell> {
@@ -127,6 +151,8 @@ pub struct Host<S: Shell> {
     surfaces: Vec<Surface>,
     start: Instant,
     pub(crate) toplevels: Toplevels,
+    fractional_manager: Option<WpFractionalScaleManagerV1>,
+    viewporter: Option<WpViewporter>,
 }
 
 impl<S: Shell> Host<S> {
@@ -165,6 +191,8 @@ impl<S: Shell> Host<S> {
             surfaces: Vec::new(),
             start: Instant::now(),
             toplevels: Toplevels::default(),
+            fractional_manager: globals.bind(&qh, 1..=1, NoEvents).ok(),
+            viewporter: globals.bind(&qh, 1..=1, NoEvents).ok(),
             loop_handle: event_loop.handle(),
             qh,
             options,
@@ -236,7 +264,15 @@ impl<S: Shell> Host<S> {
         let s = &mut surfaces[i];
         s.dirty = false;
         let scale = s.scale.max(1);
-        let (pw, ph) = (s.width as i32 * scale, s.height as i32 * scale);
+        // The exact scale where the compositor gives one, else the integer.
+        let ppp = match (s.scale_120, &s.viewport) {
+            (Some(n), Some(_)) => n as f32 / 120.0,
+            _ => scale as f32,
+        };
+        let (pw, ph) = (
+            crate::scale::pixels(s.width, ppp),
+            crate::scale::pixels(s.height, ppp),
+        );
         if pw <= 0 || ph <= 0 {
             return;
         }
@@ -256,7 +292,7 @@ impl<S: Shell> Host<S> {
             .viewports
             .entry(egui::ViewportId::ROOT)
             .or_default()
-            .native_pixels_per_point = Some(scale as f32);
+            .native_pixels_per_point = Some(ppp);
         let out = s.ctx.run_ui(input, |ui| shell.ui(ui, &s.name));
 
         if let Some(v) = out.viewport_output.get(&egui::ViewportId::ROOT) {
@@ -289,7 +325,13 @@ impl<S: Shell> Host<S> {
             dst.copy_from_slice(&src.to_le_bytes());
         }
         let surface = s.layer.wl_surface();
-        surface.set_buffer_scale(scale);
+        match (&s.viewport, s.scale_120) {
+            (Some(viewport), Some(_)) => {
+                surface.set_buffer_scale(1);
+                viewport.set_destination(s.width as i32, s.height as i32);
+            }
+            _ => surface.set_buffer_scale(scale),
+        }
         surface.damage_buffer(0, 0, pw, ph);
         surface.frame(qh, FrameCallbackData(surface.clone()));
         if let Err(e) = buffer.attach_to(surface) {
@@ -308,6 +350,14 @@ impl<S: Shell> Host<S> {
             .unwrap_or_default();
         let scale = info.as_ref().map_or(1, |i| i.scale_factor);
         let surface = self.compositor.create_surface(&self.qh);
+        let fractional = self
+            .fractional_manager
+            .as_ref()
+            .map(|m| m.get_fractional_scale(&surface, &self.qh, FractionalData));
+        let viewport = self
+            .viewporter
+            .as_ref()
+            .map(|v| v.get_viewport(&surface, &self.qh, NoEvents));
         let o = &self.options;
         let layer = self.layer_shell.create_layer_surface(
             &self.qh,
@@ -335,6 +385,9 @@ impl<S: Shell> Host<S> {
             width: o.size.0,
             height: o.size.1,
             scale,
+            scale_120: None,
+            fractional,
+            viewport,
             configured: false,
             dirty: true,
             frame_pending: false,
@@ -342,6 +395,18 @@ impl<S: Shell> Host<S> {
             events: Vec::new(),
             focused: false,
         });
+    }
+
+    /// The compositor's exact scale for the surface behind `fractional`.
+    pub(crate) fn set_scale_120(&mut self, fractional: &WpFractionalScaleV1, scale: u32) {
+        if let Some(s) = self
+            .surfaces
+            .iter_mut()
+            .find(|s| s.fractional.as_ref() == Some(fractional))
+        {
+            s.scale_120 = Some(scale);
+            s.dirty = true;
+        }
     }
 
     fn surface_mut(&mut self, surface: &wl_surface::WlSurface) -> Option<&mut Surface> {
