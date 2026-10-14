@@ -71,6 +71,9 @@ pub struct Options {
     pub size: (u32, u32),
     /// Space reserved at the anchored edge, as a bar does; 0 for none.
     pub exclusive_zone: i32,
+    /// Space between the surface and the edges it's anchored to, in
+    /// logical pixels: top, right, bottom, left.
+    pub margin: (i32, i32, i32, i32),
     pub keyboard: KeyboardInteractivity,
     /// One surface on every output (a bar), or a single one wherever the
     /// compositor puts it (a launcher).
@@ -301,6 +304,7 @@ impl<S: Shell> Host<S> {
         layer.set_anchor(o.anchor);
         layer.set_size(o.size.0, o.size.1);
         layer.set_exclusive_zone(o.exclusive_zone);
+        layer.set_margin(o.margin.0, o.margin.1, o.margin.2, o.margin.3);
         layer.set_keyboard_interactivity(o.keyboard);
         layer.commit();
 
