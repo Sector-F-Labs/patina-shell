@@ -231,6 +231,16 @@ impl<S: Shell> Host<S> {
         }
     }
 
+    /// Changes whether the surfaces take the keyboard: a notice that
+    /// becomes a menu when the user opens it.
+    pub fn set_keyboard(&mut self, keyboard: KeyboardInteractivity) {
+        self.options.keyboard = keyboard;
+        for s in &self.surfaces {
+            s.layer.set_keyboard_interactivity(keyboard);
+            s.layer.commit();
+        }
+    }
+
     /// Redraws every surface, e.g. after the shell's state changed.
     pub fn redraw_all(&mut self) {
         for s in &mut self.surfaces {
@@ -618,10 +628,9 @@ impl<S: Shell> SeatHandler for Host<S> {
                     self.pointer = Some((pointer, device));
                 }
             }
-            Capability::Keyboard
-                if self.keyboard.is_none()
-                    && self.options.keyboard != KeyboardInteractivity::None =>
-            {
+            // Bound even for surfaces that don't take the keyboard yet: one
+            // may later (set_keyboard), and without focus it gets no keys.
+            Capability::Keyboard if self.keyboard.is_none() => {
                 let repeat = Box::new(
                     |host: &mut Self, _: &wl_keyboard::WlKeyboard, e: KeyEvent| {
                         host.key(&e, true, true);

@@ -3,7 +3,10 @@
 //! makes and drives the surfaces, and the software painter (ADR-0002,
 //! ADR-0003).
 
+pub mod audio;
+pub mod bar;
 pub mod host;
+pub mod icons;
 pub mod raster;
 mod scale;
 pub mod toplevels;
