@@ -9,6 +9,7 @@ pub mod host;
 pub mod icons;
 pub mod network;
 pub mod piece;
+pub mod power;
 pub mod raster;
 mod scale;
 pub mod toplevels;

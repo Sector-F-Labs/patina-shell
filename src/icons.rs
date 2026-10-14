@@ -94,3 +94,59 @@ pub fn wifi(painter: &Painter, rect: Rect, strength: Option<u8>, colour: Color32
         );
     }
 }
+
+/// A battery lying on its side in `rect`, filled to `percent`, with a bolt
+/// while `charging`. The bolt is drawn in `background` so it shows on the
+/// fill.
+pub fn battery(
+    painter: &Painter,
+    rect: Rect,
+    percent: u8,
+    charging: bool,
+    colour: Color32,
+    background: Color32,
+) {
+    let h = rect.height().min(rect.width() * 0.6);
+    let w = h * 1.8;
+    let body = Rect::from_center_size(rect.center() - vec2(h * 0.08, 0.0), vec2(w, h));
+    let stroke = (h * 0.1).max(1.0);
+    painter.rect_stroke(
+        body,
+        h * 0.18,
+        Stroke::new(stroke, colour),
+        egui::StrokeKind::Inside,
+    );
+    // The terminal nub.
+    let nub = Rect::from_min_size(
+        pos2(body.right(), body.center().y - h * 0.18),
+        vec2(h * 0.14, h * 0.36),
+    );
+    painter.rect_filled(nub, h * 0.05, colour);
+    let inner = body.shrink(stroke * 1.8);
+    let fill = Rect::from_min_size(
+        inner.min,
+        vec2(
+            inner.width() * percent.min(100) as f32 / 100.0,
+            inner.height(),
+        ),
+    );
+    painter.rect_filled(fill, h * 0.08, colour);
+    if charging {
+        let c = inner.center();
+        let s = inner.height();
+        let bolt = vec![
+            c + vec2(0.10 * s, -0.55 * s),
+            c + vec2(-0.30 * s, 0.08 * s),
+            c + vec2(-0.02 * s, 0.08 * s),
+            c + vec2(-0.10 * s, 0.55 * s),
+            c + vec2(0.30 * s, -0.08 * s),
+            c + vec2(0.02 * s, -0.08 * s),
+        ];
+        painter.add(Shape::Path(egui::epaint::PathShape {
+            points: bolt,
+            closed: true,
+            fill: background,
+            stroke: Stroke::new(stroke * 0.6, colour).into(),
+        }));
+    }
+}

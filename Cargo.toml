@@ -14,3 +14,6 @@ egui = "0.35"
 patina-ui = { workspace = true }
 zbus = "5"
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "xkbcommon"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
