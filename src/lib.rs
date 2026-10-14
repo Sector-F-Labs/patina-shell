@@ -5,6 +5,8 @@
 
 pub mod host;
 pub mod raster;
+pub mod toplevels;
 
 pub use host::{Anchor, Host, KeyboardInteractivity, Layer, Options, Shell};
 pub use smithay_client_toolkit::reexports::calloop;
+pub use toplevels::{Toplevel, ToplevelRequest};

@@ -43,6 +43,7 @@ use smithay_client_toolkit::{
 pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
 
 use crate::raster::Painter;
+use crate::toplevels::{ManagerData, Toplevel, ToplevelRequest, Toplevels};
 
 /// What a host draws.
 pub trait Shell: 'static {
@@ -57,6 +58,12 @@ pub trait Shell: 'static {
     /// returns from [`Host::run`] when it is.
     fn finished(&self) -> bool {
         false
+    }
+    /// The open windows changed ([`Options::toplevels`] on).
+    fn toplevels_changed(&mut self, _toplevels: &[Toplevel]) {}
+    /// Windows to activate or close, collected during `ui`.
+    fn take_toplevel_requests(&mut self) -> Vec<ToplevelRequest> {
+        Vec::new()
     }
 }
 
@@ -78,6 +85,8 @@ pub struct Options {
     /// One surface on every output (a bar), or a single one wherever the
     /// compositor puts it (a launcher).
     pub per_output: bool,
+    /// Follow the open windows, through wlr-foreign-toplevel-management.
+    pub toplevels: bool,
 }
 
 struct Surface {
@@ -105,7 +114,7 @@ pub struct Host<S: Shell> {
     qh: QueueHandle<Self>,
     loop_handle: LoopHandle<'static, Self>,
     registry_state: RegistryState,
-    seat_state: SeatState,
+    pub(crate) seat_state: SeatState,
     output_state: OutputState,
     compositor: CompositorState,
     layer_shell: LayerShell,
@@ -117,6 +126,7 @@ pub struct Host<S: Shell> {
     modifiers: egui::Modifiers,
     surfaces: Vec<Surface>,
     start: Instant,
+    pub(crate) toplevels: Toplevels,
 }
 
 impl<S: Shell> Host<S> {
@@ -154,12 +164,16 @@ impl<S: Shell> Host<S> {
             modifiers: egui::Modifiers::default(),
             surfaces: Vec::new(),
             start: Instant::now(),
+            toplevels: Toplevels::default(),
             loop_handle: event_loop.handle(),
             qh,
             options,
         };
         if !host.options.per_output {
             host.add_surface(None);
+        }
+        if host.options.toplevels {
+            host.toplevels.manager = globals.bind(&host.qh, 1..=3, ManagerData).ok();
         }
         Ok((host, event_loop))
     }
@@ -182,6 +196,7 @@ impl<S: Shell> Host<S> {
                 }
             }
             self.draw_dirty();
+            self.send_toplevel_requests();
             if self.shell.finished() {
                 return Ok(());
             }
