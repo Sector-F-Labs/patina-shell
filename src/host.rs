@@ -473,12 +473,15 @@ fn egui_key(sym: Keysym) -> Option<egui::Key> {
         Keysym::Page_Up => Key::PageUp,
         Keysym::Page_Down => Key::PageDown,
         Keysym::space => Key::Space,
-        Keysym::a | Keysym::A => Key::A,
-        Keysym::c | Keysym::C => Key::C,
-        Keysym::v | Keysym::V => Key::V,
-        Keysym::x | Keysym::X => Key::X,
-        Keysym::z | Keysym::Z => Key::Z,
-        _ => return None,
+        // Letters and digits, for shortcuts (Ctrl+A, Ctrl+N, ...); their
+        // text comes separately.
+        _ => {
+            let c = sym.key_char()?;
+            if !c.is_ascii_alphanumeric() {
+                return None;
+            }
+            return Key::from_name(&c.to_ascii_uppercase().to_string());
+        }
     })
 }
 
@@ -836,3 +839,17 @@ impl<S: Shell> ProvidesRegistryState for Host<S> {
 
 delegate_registry!(@<S: Shell> Host<S>);
 smithay_client_toolkit::delegate_dispatch2!(@<S: Shell> Host<S>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn letters_and_digits_reach_egui_as_keys() {
+        assert_eq!(egui_key(Keysym::p), Some(egui::Key::P));
+        assert_eq!(egui_key(Keysym::N), Some(egui::Key::N));
+        assert_eq!(egui_key(Keysym::_1), Some(egui::Key::Num1));
+        assert_eq!(egui_key(Keysym::Escape), Some(egui::Key::Escape));
+        assert_eq!(egui_key(Keysym::odiaeresis), None);
+    }
+}

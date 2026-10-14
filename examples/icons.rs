@@ -6,11 +6,16 @@ use egui::{Color32, Pos2, Rect, vec2};
 use patina_shell::{icons, raster::Painter};
 
 fn main() {
-    let out = std::env::args().nth(1).unwrap_or_else(|| "icons.png".into());
+    let out = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "icons.png".into());
     let (w, h, ppp) = (520usize, 62usize, 1.5f32);
     let ctx = egui::Context::default();
     let mut input = egui::RawInput {
-        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(w as f32 / ppp, h as f32 / ppp))),
+        screen_rect: Some(Rect::from_min_size(
+            Pos2::ZERO,
+            vec2(w as f32 / ppp, h as f32 / ppp),
+        )),
         ..Default::default()
     };
     input
@@ -37,7 +42,14 @@ fn main() {
     });
     let primitives = ctx.tessellate(out_frame.shapes, out_frame.pixels_per_point);
     let mut pixels = vec![0u32; w * h];
-    Painter::default().paint(&mut pixels, w, h, ppp, &primitives, &out_frame.textures_delta);
+    Painter::default().paint(
+        &mut pixels,
+        w,
+        h,
+        ppp,
+        &primitives,
+        &out_frame.textures_delta,
+    );
     let rgba: Vec<u8> = pixels
         .iter()
         .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8])
