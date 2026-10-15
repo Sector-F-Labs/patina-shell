@@ -44,6 +44,22 @@ pub fn speaker(painter: &Painter, rect: Rect, level: f32, muted: bool, colour: C
     }
 }
 
+/// A sun in `rect` for the screen's brightness: a disc, and eight rays that
+/// grow with `level` (0 to 1), as the speaker's waves do with the volume.
+pub fn sun(painter: &Painter, rect: Rect, level: f32, colour: Color32) {
+    let s = rect.height().min(rect.width());
+    let centre = rect.center();
+    painter.circle_filled(centre, s * 0.17, colour);
+    let stroke = Stroke::new((s * 0.075).max(1.0), colour);
+    let inner = s * 0.28;
+    let outer = inner + s * (0.06 + 0.14 * level.clamp(0.0, 1.0));
+    for i in 0..8 {
+        let a = std::f32::consts::FRAC_PI_4 * i as f32;
+        let d = vec2(a.cos(), a.sin());
+        painter.line_segment([centre + d * inner, centre + d * outer], stroke);
+    }
+}
+
 /// Points along a quarter-circle arc opening to the right.
 fn arc(centre: Pos2, radius: f32) -> Vec<Pos2> {
     (0..=8)

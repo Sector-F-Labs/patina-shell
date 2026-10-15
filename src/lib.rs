@@ -4,6 +4,7 @@
 //! ADR-0003).
 
 pub mod audio;
+pub mod backlight;
 pub mod bar;
 pub mod host;
 pub mod icons;
