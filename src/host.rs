@@ -5,6 +5,9 @@
 //! bar and the launcher need a host of their own (ADR-0003). Nothing here is
 //! specific to one of them: a [`Shell`] says what to draw, [`Options`] says
 //! where, and the host does surfaces, outputs, scale, input and painting.
+//!
+//! With [`Options::lock`], the surfaces are ext-session-lock surfaces
+//! instead, one per output, for the lock screen (ADR-0028).
 
 use std::time::{Duration, Instant};
 
@@ -26,6 +29,10 @@ use smithay_client_toolkit::{
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    session_lock::{
+        SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
+        SessionLockSurfaceConfigure,
+    },
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
@@ -63,7 +70,8 @@ pub trait Shell: 'static {
     /// surface the compositor placed ([`Options::per_output`] off).
     fn ui(&mut self, ui: &mut egui::Ui, output: &str);
     /// Whether the program is done, checked after every frame; the host
-    /// returns from [`Host::run`] when it is.
+    /// returns from [`Host::run`] when it is. A locking host
+    /// ([`Options::lock`]) unlocks the session first.
     fn finished(&self) -> bool {
         false
     }
@@ -95,12 +103,38 @@ pub struct Options {
     pub per_output: bool,
     /// Follow the open windows, through wlr-foreign-toplevel-management.
     pub toplevels: bool,
+    /// Lock the session (ext-session-lock) and draw on a lock surface on
+    /// every output, which the compositor sizes; the layer fields above
+    /// are unused.
+    pub lock: bool,
+}
+
+/// What a surface is to the compositor.
+enum Role {
+    Layer(LayerSurface),
+    Lock(SessionLockSurface),
+}
+
+impl Role {
+    fn wl_surface(&self) -> &wl_surface::WlSurface {
+        match self {
+            Role::Layer(l) => l.wl_surface(),
+            Role::Lock(l) => l.wl_surface(),
+        }
+    }
+
+    fn commit(&self) {
+        match self {
+            Role::Layer(l) => l.commit(),
+            Role::Lock(l) => l.wl_surface().commit(),
+        }
+    }
 }
 
 struct Surface {
     output: Option<wl_output::WlOutput>,
     name: String,
-    layer: LayerSurface,
+    role: Role,
     ctx: egui::Context,
     painter: Painter,
     pixels: Vec<u32>,
@@ -135,13 +169,18 @@ impl Drop for Surface {
 pub struct Host<S: Shell> {
     pub shell: S,
     options: Options,
+    conn: Connection,
     qh: QueueHandle<Self>,
     loop_handle: LoopHandle<'static, Self>,
     registry_state: RegistryState,
     pub(crate) seat_state: SeatState,
     output_state: OutputState,
     compositor: CompositorState,
-    layer_shell: LayerShell,
+    layer_shell: Option<LayerShell>,
+    /// The session lock, asked for at once when locking.
+    lock: Option<SessionLock>,
+    /// The lock ended without the shell finishing: refused, or taken away.
+    lock_ended: Option<Result<(), String>>,
     shm: Shm,
     pool: SlotPool,
     cursor_shape: Option<CursorShapeManager>,
@@ -165,14 +204,23 @@ impl<S: Shell> Host<S> {
         let (globals, queue) = registry_queue_init(&conn).map_err(|e| e.to_string())?;
         let qh = queue.handle();
         let event_loop = EventLoop::try_new().map_err(|e| e.to_string())?;
-        WaylandSource::new(conn, queue)
+        WaylandSource::new(conn.clone(), queue)
             .insert(event_loop.handle())
             .map_err(|e| e.to_string())?;
 
         let compositor =
             CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
-        let layer_shell = LayerShell::bind(&globals, &qh)
-            .map_err(|e| format!("the compositor has no layer shell (zwlr_layer_shell_v1): {e}"))?;
+        let (layer_shell, lock) = if options.lock {
+            let lock = SessionLockState::new(&globals, &qh).lock(&qh).map_err(|e| {
+                format!("the compositor can't lock the session (ext_session_lock_manager_v1): {e}")
+            })?;
+            (None, Some(lock))
+        } else {
+            let layer_shell = LayerShell::bind(&globals, &qh).map_err(|e| {
+                format!("the compositor has no layer shell (zwlr_layer_shell_v1): {e}")
+            })?;
+            (Some(layer_shell), None)
+        };
         let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
         let pool = SlotPool::new(4096 * 32 * 4, &shm).map_err(|e| e.to_string())?;
         let mut host = Self {
@@ -182,6 +230,8 @@ impl<S: Shell> Host<S> {
             output_state: OutputState::new(&globals, &qh),
             compositor,
             layer_shell,
+            lock,
+            lock_ended: None,
             shm,
             pool,
             cursor_shape: CursorShapeManager::bind(&globals, &qh).ok(),
@@ -194,10 +244,11 @@ impl<S: Shell> Host<S> {
             fractional_manager: globals.bind(&qh, 1..=1, NoEvents).ok(),
             viewporter: globals.bind(&qh, 1..=1, NoEvents).ok(),
             loop_handle: event_loop.handle(),
+            conn,
             qh,
             options,
         };
-        if !host.options.per_output {
+        if !host.options.per_output && !host.options.lock {
             host.add_surface(None);
         }
         if host.options.toplevels {
@@ -226,7 +277,23 @@ impl<S: Shell> Host<S> {
             self.draw_dirty();
             self.send_toplevel_requests();
             if self.shell.finished() {
+                self.unlock();
                 return Ok(());
+            }
+            if let Some(ended) = self.lock_ended.take() {
+                return ended;
+            }
+        }
+    }
+
+    /// Unlocks the session, if this host locked it. Only a finished shell
+    /// does this: any other way out (an error, a crash) leaves the session
+    /// locked, as the protocol wants.
+    fn unlock(&mut self) {
+        if let Some(lock) = self.lock.take() {
+            lock.unlock();
+            if let Err(e) = self.conn.flush() {
+                eprintln!("patina-shell: unlocking: {e}");
             }
         }
     }
@@ -236,8 +303,10 @@ impl<S: Shell> Host<S> {
     pub fn set_keyboard(&mut self, keyboard: KeyboardInteractivity) {
         self.options.keyboard = keyboard;
         for s in &self.surfaces {
-            s.layer.set_keyboard_interactivity(keyboard);
-            s.layer.commit();
+            if let Role::Layer(layer) = &s.role {
+                layer.set_keyboard_interactivity(keyboard);
+                layer.commit();
+            }
         }
     }
 
@@ -334,7 +403,7 @@ impl<S: Shell> Host<S> {
         for (dst, src) in canvas.chunks_exact_mut(4).zip(&s.pixels) {
             dst.copy_from_slice(&src.to_le_bytes());
         }
-        let surface = s.layer.wl_surface();
+        let surface = s.role.wl_surface();
         match (&s.viewport, s.scale_120) {
             (Some(viewport), Some(_)) => {
                 surface.set_buffer_scale(1);
@@ -348,7 +417,7 @@ impl<S: Shell> Host<S> {
             eprintln!("patina-shell: {e}");
             return;
         }
-        s.layer.commit();
+        s.role.commit();
         s.frame_pending = true;
     }
 
@@ -369,31 +438,43 @@ impl<S: Shell> Host<S> {
             .as_ref()
             .map(|v| v.get_viewport(&surface, &self.qh, NoEvents));
         let o = &self.options;
-        let layer = self.layer_shell.create_layer_surface(
-            &self.qh,
-            surface,
-            o.layer,
-            Some(o.namespace.clone()),
-            output.as_ref(),
-        );
-        layer.set_anchor(o.anchor);
-        layer.set_size(o.size.0, o.size.1);
-        layer.set_exclusive_zone(o.exclusive_zone);
-        layer.set_margin(o.margin.0, o.margin.1, o.margin.2, o.margin.3);
-        layer.set_keyboard_interactivity(o.keyboard);
-        layer.commit();
+        // A lock surface waits for the compositor's size, as a layer
+        // surface does for its configure.
+        let (role, size) = match (&self.lock, &self.layer_shell, &output) {
+            (Some(lock), _, Some(output)) => (
+                Role::Lock(lock.create_lock_surface(surface, output, &self.qh)),
+                (0, 0),
+            ),
+            (None, Some(layer_shell), _) => {
+                let layer = layer_shell.create_layer_surface(
+                    &self.qh,
+                    surface,
+                    o.layer,
+                    Some(o.namespace.clone()),
+                    output.as_ref(),
+                );
+                layer.set_anchor(o.anchor);
+                layer.set_size(o.size.0, o.size.1);
+                layer.set_exclusive_zone(o.exclusive_zone);
+                layer.set_margin(o.margin.0, o.margin.1, o.margin.2, o.margin.3);
+                layer.set_keyboard_interactivity(o.keyboard);
+                layer.commit();
+                (Role::Layer(layer), o.size)
+            }
+            _ => return,
+        };
 
         let ctx = egui::Context::default();
         self.shell.setup(&ctx);
         self.surfaces.push(Surface {
             output,
             name,
-            layer,
+            role,
             ctx,
             painter: Painter::default(),
             pixels: Vec::new(),
-            width: o.size.0,
-            height: o.size.1,
+            width: size.0,
+            height: size.1,
             scale,
             scale_120: None,
             fractional,
@@ -422,7 +503,7 @@ impl<S: Shell> Host<S> {
     fn surface_mut(&mut self, surface: &wl_surface::WlSurface) -> Option<&mut Surface> {
         self.surfaces
             .iter_mut()
-            .find(|s| s.layer.wl_surface() == surface)
+            .find(|s| s.role.wl_surface() == surface)
     }
 
     /// Hands a key to the focused surface.
@@ -545,7 +626,9 @@ impl<S: Shell> OutputHandler for Host<S> {
     }
 
     fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        if self.options.per_output {
+        // A lock covers every output, and is drawn before it's confirmed:
+        // some compositors confirm only once every output shows it.
+        if self.options.per_output || self.lock.is_some() {
             self.add_surface(Some(output));
         }
     }
@@ -581,7 +664,8 @@ impl<S: Shell> OutputHandler for Host<S> {
 
 impl<S: Shell> LayerShellHandler for Host<S> {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        self.surfaces.retain(|s| &s.layer != layer);
+        self.surfaces
+            .retain(|s| !matches!(&s.role, Role::Layer(l) if l == layer));
     }
 
     fn configure(
@@ -592,7 +676,11 @@ impl<S: Shell> LayerShellHandler for Host<S> {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        let Some(s) = self.surfaces.iter_mut().find(|s| &s.layer == layer) else {
+        let Some(s) = self
+            .surfaces
+            .iter_mut()
+            .find(|s| matches!(&s.role, Role::Layer(l) if l == layer))
+        else {
             return;
         };
         let (w, h) = configure.new_size;
@@ -602,6 +690,36 @@ impl<S: Shell> LayerShellHandler for Host<S> {
         if h > 0 {
             s.height = h;
         }
+        s.configured = true;
+        s.dirty = true;
+    }
+}
+
+impl<S: Shell> SessionLockHandler for Host<S> {
+    fn locked(&mut self, _: &Connection, _: &QueueHandle<Self>, _: SessionLock) {}
+
+    fn finished(&mut self, _: &Connection, _: &QueueHandle<Self>, lock: SessionLock) {
+        self.lock_ended = Some(if lock.is_locked() {
+            Ok(())
+        } else {
+            Err("the compositor didn't lock the session; is it locked already?".into())
+        });
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        surface: SessionLockSurface,
+        configure: SessionLockSurfaceConfigure,
+        _: u32,
+    ) {
+        let Some(s) = self.surface_mut(surface.wl_surface()) else {
+            return;
+        };
+        let (w, h) = configure.new_size;
+        s.width = w.max(1);
+        s.height = h.max(1);
         s.configured = true;
         s.dirty = true;
     }
