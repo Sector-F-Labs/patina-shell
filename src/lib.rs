@@ -7,6 +7,7 @@ pub mod audio;
 pub mod bar;
 pub mod host;
 pub mod icons;
+pub mod logo;
 pub mod network;
 pub mod piece;
 pub mod power;

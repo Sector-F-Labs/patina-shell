@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, FrameCallbackData},
+    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     delegate_registry,
     output::{OutputHandler, OutputState},
     reexports::{
@@ -48,6 +48,10 @@ use smithay_client_toolkit::{
 };
 
 pub use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer};
+
+/// The largest texture egui may make, in pixels a side: room for an 8K
+/// wallpaper.
+const MAX_TEXTURE_SIDE: usize = 8192;
 
 use crate::raster::Painter;
 use crate::scale::{FractionalData, NoEvents};
@@ -106,6 +110,9 @@ pub struct Options {
     pub per_output: bool,
     /// Follow the open windows, through wlr-foreign-toplevel-management.
     pub toplevels: bool,
+    /// Take no pointer input, so clicks reach what's under the surface (the
+    /// desktop, under a wallpaper) and moving the pointer redraws nothing.
+    pub click_through: bool,
     /// Lock the session (ext-session-lock) and draw on a lock surface on
     /// every output, which the compositor sizes; the layer fields above
     /// are unused.
@@ -376,6 +383,9 @@ impl<S: Shell> Host<S> {
             events: std::mem::take(&mut s.events),
             modifiers: *modifiers,
             focused: s.focused,
+            // The painter takes any size; egui's default (2048) is a GPU's,
+            // and smaller than a wallpaper.
+            max_texture_side: Some(MAX_TEXTURE_SIDE),
             ..Default::default()
         };
         input
@@ -469,6 +479,12 @@ impl<S: Shell> Host<S> {
                 layer.set_exclusive_zone(o.exclusive_zone);
                 layer.set_margin(o.margin.0, o.margin.1, o.margin.2, o.margin.3);
                 layer.set_keyboard_interactivity(o.keyboard);
+                if o.click_through {
+                    match Region::new(&self.compositor) {
+                        Ok(empty) => layer.set_input_region(Some(empty.wl_region())),
+                        Err(e) => eprintln!("patina-shell: no input region: {e}"),
+                    }
+                }
                 layer.commit();
                 (Role::Layer(layer), o.size)
             }

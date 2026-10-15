@@ -30,10 +30,17 @@ fn config_value(key: &str) -> Option<String> {
     top_level(&text, key)
 }
 
-/// Sets the bar's skin in its config file, keeping the rest of the file,
-/// and making the file if there's none. The bar notices and changes skin;
-/// pieces pick it up when they next open.
-pub fn set_skin(name: &str) -> Result<(), String> {
+/// The desktop's wallpaper, an image file; `None` for the skin's colour.
+pub fn wallpaper() -> Option<std::path::PathBuf> {
+    config_value("wallpaper")
+        .filter(|p| !p.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+/// Sets the top-level `key` (`skin`, `wallpaper`) in the bar's config file,
+/// keeping the rest of the file, and making the file if there's none. The
+/// bar and the wallpaper notice; pieces pick it up when they next open.
+pub fn set(key: &str, value: &str) -> Result<(), String> {
     let path = config_path().ok_or("no home folder")?;
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -43,7 +50,7 @@ pub fn set_skin(name: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(&path, with_top_level(&text, "skin", name))
+    std::fs::write(&path, with_top_level(&text, key, value))
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
