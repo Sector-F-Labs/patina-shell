@@ -65,6 +65,9 @@ pub trait Shell: 'static {
     /// Called for each new egui context, before its first frame, e.g. to
     /// apply a skin.
     fn setup(&mut self, ctx: &egui::Context);
+    /// Called for each egui context by [`Host::restyle`], e.g. after the
+    /// skin changed.
+    fn restyle(&mut self, _ctx: &egui::Context) {}
     /// Draws the surface on `output`, the compositor's name for it (the
     /// name dwl uses in its status, e.g. `HEADLESS-1`). It's empty for a
     /// surface the compositor placed ([`Options::per_output`] off).
@@ -313,6 +316,14 @@ impl<S: Shell> Host<S> {
     /// Redraws every surface, e.g. after the shell's state changed.
     pub fn redraw_all(&mut self) {
         for s in &mut self.surfaces {
+            s.dirty = true;
+        }
+    }
+
+    /// Restyles and redraws every surface ([`Shell::restyle`]).
+    pub fn restyle(&mut self) {
+        for s in &mut self.surfaces {
+            self.shell.restyle(&s.ctx);
             s.dirty = true;
         }
     }

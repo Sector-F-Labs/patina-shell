@@ -70,13 +70,16 @@ pub fn bar_edge() -> Anchor {
     }
 }
 
-/// The bar's skin, from Patina's built-ins and the piece's own skins
-/// folder, or Default.
+/// The bar's skin, from Patina's built-ins, the bar's skins folder and the
+/// piece's own, or Default.
 pub fn skin(app: &str) -> Skin {
     let Some(name) = crate::bar::skin() else {
         return Skin::default_skin();
     };
-    let dirs: Vec<_> = skin::app_dir(app).into_iter().collect();
+    let dirs: Vec<_> = skin::app_dir("patina-bar")
+        .into_iter()
+        .chain(skin::app_dir(app))
+        .collect();
     let (skins, _) = skin::load_all(skin::BUILT_IN, &dirs);
     skins
         .into_iter()

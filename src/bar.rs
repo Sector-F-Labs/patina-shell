@@ -20,10 +20,62 @@ pub fn at_top() -> bool {
         == Some("top")
 }
 
+/// The bar's config file, `~/.config/patina-bar/config.toml`.
+pub fn config_path() -> Option<std::path::PathBuf> {
+    Some(dirs_config()?.join("patina-bar").join("config.toml"))
+}
+
 fn config_value(key: &str) -> Option<String> {
-    let path = dirs_config()?.join("patina-bar").join("config.toml");
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = std::fs::read_to_string(config_path()?).ok()?;
     top_level(&text, key)
+}
+
+/// Sets the bar's skin in its config file, keeping the rest of the file,
+/// and making the file if there's none. The bar notices and changes skin;
+/// pieces pick it up when they next open.
+pub fn set_skin(name: &str) -> Result<(), String> {
+    let path = config_path().ok_or("no home folder")?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, with_top_level(&text, "skin", name))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// `text` with the top-level `key` set to the string `value`: the line
+/// that sets it replaced, or a new one before the first [section].
+pub fn with_top_level(text: &str, key: &str, value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    let line = format!("{key} = \"{escaped}\"");
+    let mut out = Vec::new();
+    let mut done = false;
+    for l in text.lines() {
+        let trimmed = l.trim();
+        if !done && trimmed.starts_with('[') {
+            out.push(line.clone());
+            done = true;
+        }
+        let sets_key = trimmed
+            .split_once('=')
+            .is_some_and(|(k, _)| k.trim() == key);
+        if !done && sets_key {
+            out.push(line.clone());
+            done = true;
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    if !done {
+        out.push(line);
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
 }
 
 /// `key = "value"` at the top of a TOML file, before any [section].
@@ -61,5 +113,21 @@ mod tests {
         assert_eq!(top_level(text, "skin").as_deref(), Some("Steam Classic"));
         assert_eq!(top_level("[a]\nskin = \"x\"", "skin"), None);
         assert_eq!(top_level("", "skin"), None);
+    }
+
+    #[test]
+    fn sets_a_top_level_key_keeping_the_rest() {
+        let text = "# bar\nskin = \"Default\"  # old\nheight = 30\n[other]\nskin = \"x\"\n";
+        assert_eq!(
+            with_top_level(text, "skin", "Steam Classic"),
+            "# bar\nskin = \"Steam Classic\"\nheight = 30\n[other]\nskin = \"x\"\n"
+        );
+        assert_eq!(
+            with_top_level("height = 30\n[a]\nb = 1\n", "skin", "Aqua"),
+            "height = 30\nskin = \"Aqua\"\n[a]\nb = 1\n"
+        );
+        assert_eq!(with_top_level("", "skin", "A \"q\""), "skin = \"A \\\"q\\\"\"\n");
+        let set = with_top_level("# none yet\n", "skin", "Aqua");
+        assert_eq!(top_level(&set, "skin").as_deref(), Some("Aqua"));
     }
 }
