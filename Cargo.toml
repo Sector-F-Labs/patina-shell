@@ -3,16 +3,15 @@ name = "patina-shell"
 version = "0.1.0"
 edition = "2024"
 license = "BSD-3-Clause"
-description = "A layer-shell host for egui, drawn in software: the base of the Patina desktop's bar, launcher and other shell pieces"
-repository = "https://github.com/Sector-F-Labs/patina-desktop"
+description = "Desktop pieces in egui: wlr-layer-shell surfaces (or a window where there's none) drawn in software, for the Patina desktop's bar, launcher and menus"
+repository = "https://github.com/Sector-F-Labs/patina-shell"
 
 [lib]
 name = "patina_shell"
 
 [dependencies]
 egui = "0.35"
-patina-ui = { workspace = true }
+# Patina's develop branch, as the Patina desktop uses it, so skins agree.
+patina-ui = { git = "https://github.com/Sector-F-Labs/patina", branch = "develop" }
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "xkbcommon"] }
 
-[dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }

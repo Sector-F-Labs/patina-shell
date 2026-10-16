@@ -1,7 +1,10 @@
-//! The Patina desktop's shell pieces (the bar, the launcher) are egui on
-//! wlr-layer-shell surfaces. This crate is what they share: the host that
-//! makes and drives the surfaces, and the software painter (ADR-0002,
-//! ADR-0003).
+//! Desktop pieces in egui: a bar, a launcher, a menu or a lock screen are
+//! egui UIs on wlr-layer-shell surfaces, drawn in software. This crate is
+//! what they share: the host that makes and drives the surfaces
+//! ([`Host`], ADR-0003 and ADR-0011 of the Patina desktop), the software
+//! painter ([`raster`], its ADR-0002), one running copy per display
+//! ([`piece`]), the Patina bar's skin and edge ([`bar`]), and the open
+//! windows ([`toplevels`]).
 
 pub mod bar;
 pub mod host;
