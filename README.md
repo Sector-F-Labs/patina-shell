@@ -11,7 +11,9 @@ egui UI into a piece of the desktop.
   or without the keyboard. A piece implements `Shell` (its UI) and passes `Options` (anchor,
   size, layer, keyboard, one surface per output or one, click-through, lock); `Host::connect`
   and `Host::run` do the rest. With `Options::lock` the host draws on ext-session-lock surfaces
-  instead, for patina-lock.
+  instead, for patina-lock. With `Options::window_fallback`, a compositor without layer shell
+  (GNOME) gets a borderless, maximised, transparent window with the shell centred in it; only the
+  launcher asks for this.
 - **A software painter** (`raster.rs`, ADR-0002): egui's meshes drawn on the CPU into wl_shm
   buffers. Pieces are small or rarely change, and this needs no GPU or GL driver, so they work
   in VMs and on any compositor. `scale.rs` draws at the output's exact fractional scale.

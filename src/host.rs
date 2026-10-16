@@ -7,7 +7,11 @@
 //! where, and the host does surfaces, outputs, scale, input and painting.
 //!
 //! With [`Options::lock`], the surfaces are ext-session-lock surfaces
-//! instead, one per output, for the lock screen (ADR-0028).
+//! instead, one per output, for the lock screen (ADR-0028). With
+//! [`Options::window_fallback`], a compositor without layer shell (GNOME)
+//! gets an ordinary window instead: borderless, maximised and transparent,
+//! with the shell drawn centred in it at [`Options::size`], and a click
+//! outside that, or the window being closed, ending the host.
 
 use std::time::{Duration, Instant};
 
@@ -29,10 +33,6 @@ use smithay_client_toolkit::{
     },
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    session_lock::{
-        SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
-        SessionLockSurfaceConfigure,
-    },
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
@@ -40,9 +40,17 @@ use smithay_client_toolkit::{
             PointerEvent, PointerEventKind, PointerHandler, cursor_shape::CursorShapeManager,
         },
     },
+    session_lock::{
+        SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
+        SessionLockSurfaceConfigure,
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
+        xdg::{
+            XdgShell,
+            window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
+        },
     },
     shm::{Shm, ShmHandler, slot::SlotPool},
 };
@@ -117,12 +125,18 @@ pub struct Options {
     /// every output, which the compositor sizes; the layer fields above
     /// are unused.
     pub lock: bool,
+    /// Where the compositor has no layer shell (GNOME), open an ordinary
+    /// window instead of failing, with the shell centred in it, as a
+    /// launcher such as wofi does there. Only for a single surface.
+    pub window_fallback: bool,
 }
 
 /// What a surface is to the compositor.
 enum Role {
     Layer(LayerSurface),
     Lock(SessionLockSurface),
+    /// An ordinary window, where there's no layer shell.
+    Window(Window),
 }
 
 impl Role {
@@ -130,6 +144,7 @@ impl Role {
         match self {
             Role::Layer(l) => l.wl_surface(),
             Role::Lock(l) => l.wl_surface(),
+            Role::Window(w) => w.wl_surface(),
         }
     }
 
@@ -137,6 +152,7 @@ impl Role {
         match self {
             Role::Layer(l) => l.commit(),
             Role::Lock(l) => l.wl_surface().commit(),
+            Role::Window(w) => w.commit(),
         }
     }
 }
@@ -187,6 +203,10 @@ pub struct Host<S: Shell> {
     output_state: OutputState,
     compositor: CompositorState,
     layer_shell: Option<LayerShell>,
+    /// For [`Options::window_fallback`], where there's no layer shell.
+    xdg_shell: Option<XdgShell>,
+    /// The fallback window was closed, or clicked outside the shell.
+    dismissed: bool,
     /// The session lock, asked for at once when locking.
     lock: Option<SessionLock>,
     /// The lock ended without the shell finishing: refused, or taken away.
@@ -220,16 +240,27 @@ impl<S: Shell> Host<S> {
 
         let compositor =
             CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
-        let (layer_shell, lock) = if options.lock {
-            let lock = SessionLockState::new(&globals, &qh).lock(&qh).map_err(|e| {
+        let (layer_shell, lock) =
+            if options.lock {
+                let lock = SessionLockState::new(&globals, &qh).lock(&qh).map_err(|e| {
                 format!("the compositor can't lock the session (ext_session_lock_manager_v1): {e}")
             })?;
-            (None, Some(lock))
+                (None, Some(lock))
+            } else {
+                match LayerShell::bind(&globals, &qh) {
+                    Ok(layer_shell) => (Some(layer_shell), None),
+                    Err(_) if options.window_fallback && !options.per_output => (None, None),
+                    Err(e) => {
+                        return Err(format!(
+                            "the compositor has no layer shell (zwlr_layer_shell_v1): {e}"
+                        ));
+                    }
+                }
+            };
+        let xdg_shell = if layer_shell.is_none() && lock.is_none() {
+            Some(XdgShell::bind(&globals, &qh).map_err(|e| format!("xdg_wm_base: {e}"))?)
         } else {
-            let layer_shell = LayerShell::bind(&globals, &qh).map_err(|e| {
-                format!("the compositor has no layer shell (zwlr_layer_shell_v1): {e}")
-            })?;
-            (Some(layer_shell), None)
+            None
         };
         let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
         let pool = SlotPool::new(4096 * 32 * 4, &shm).map_err(|e| e.to_string())?;
@@ -240,6 +271,8 @@ impl<S: Shell> Host<S> {
             output_state: OutputState::new(&globals, &qh),
             compositor,
             layer_shell,
+            xdg_shell,
+            dismissed: false,
             lock,
             lock_ended: None,
             shm,
@@ -286,7 +319,7 @@ impl<S: Shell> Host<S> {
             }
             self.draw_dirty();
             self.send_toplevel_requests();
-            if self.shell.finished() {
+            if self.shell.finished() || self.dismissed {
                 self.unlock();
                 return Ok(());
             }
@@ -356,6 +389,8 @@ impl<S: Shell> Host<S> {
             start,
             qh,
             modifiers,
+            options,
+            dismissed,
             ..
         } = self;
         let s = &mut surfaces[i];
@@ -393,7 +428,26 @@ impl<S: Shell> Host<S> {
             .entry(egui::ViewportId::ROOT)
             .or_default()
             .native_pixels_per_point = Some(ppp);
-        let out = s.ctx.run_ui(input, |ui| shell.ui(ui, &s.name));
+        let windowed = matches!(s.role, Role::Window(_));
+        let panel = egui::vec2(options.size.0 as f32, options.size.1 as f32);
+        let out = s.ctx.run_ui(input, |ui| {
+            if !windowed {
+                return shell.ui(ui, &s.name);
+            }
+            // The shell at its size in the middle of the window; a click on
+            // the clear space around it dismisses it, as clicking elsewhere
+            // does a layer-shell menu.
+            let rect = egui::Rect::from_center_size(ui.max_rect().center(), panel);
+            let outside = ui.input(|i| {
+                i.pointer.any_pressed()
+                    && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
+            });
+            *dismissed |= outside;
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                ui.set_clip_rect(rect);
+                shell.ui(ui, &s.name);
+            });
+        });
 
         if let Some(v) = out.viewport_output.get(&egui::ViewportId::ROOT) {
             if v.repaint_delay.is_zero() {
@@ -487,6 +541,17 @@ impl<S: Shell> Host<S> {
                 }
                 layer.commit();
                 (Role::Layer(layer), o.size)
+            }
+            (None, None, _) => {
+                let Some(xdg) = &self.xdg_shell else { return };
+                let window = xdg.create_window(surface, WindowDecorations::None, &self.qh);
+                window.set_title(o.namespace.clone());
+                window.set_app_id(o.namespace.clone());
+                // Maximised and transparent, so the shell can sit in the
+                // middle: GNOME doesn't let a window say where it goes.
+                window.set_maximized();
+                window.commit();
+                (Role::Window(window), o.size)
             }
             _ => return,
         };
@@ -717,6 +782,34 @@ impl<S: Shell> LayerShellHandler for Host<S> {
         if h > 0 {
             s.height = h;
         }
+        s.configured = true;
+        s.dirty = true;
+    }
+}
+
+impl<S: Shell> WindowHandler for Host<S> {
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
+        self.dismissed = true;
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        window: &Window,
+        configure: WindowConfigure,
+        _: u32,
+    ) {
+        let (w, h) = self.options.size;
+        let Some(s) = self
+            .surfaces
+            .iter_mut()
+            .find(|s| matches!(&s.role, Role::Window(x) if x == window))
+        else {
+            return;
+        };
+        s.width = configure.new_size.0.map_or(w, |n| n.get());
+        s.height = configure.new_size.1.map_or(h, |n| n.get());
         s.configured = true;
         s.dirty = true;
     }

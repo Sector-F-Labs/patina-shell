@@ -133,7 +133,10 @@ mod tests {
             with_top_level("height = 30\n[a]\nb = 1\n", "skin", "Aqua"),
             "height = 30\nskin = \"Aqua\"\n[a]\nb = 1\n"
         );
-        assert_eq!(with_top_level("", "skin", "A \"q\""), "skin = \"A \\\"q\\\"\"\n");
+        assert_eq!(
+            with_top_level("", "skin", "A \"q\""),
+            "skin = \"A \\\"q\\\"\"\n"
+        );
         let set = with_top_level("# none yet\n", "skin", "Aqua");
         assert_eq!(top_level(&set, "skin").as_deref(), Some("Aqua"));
     }
