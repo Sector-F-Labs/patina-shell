@@ -1,40 +1,81 @@
 # patina-shell
 
-The library every shell piece is built on: the bar, the launcher, the menus, the lock screen
-and the wallpaper. It isn't a program and has no place on screen of its own; it's what makes an
-egui UI into a piece of the desktop.
+Desktop pieces in [egui](https://github.com/emilk/egui): a bar, a launcher, a menu or a lock
+screen, each an egui UI on a wlr-layer-shell surface, drawn in software. It's the base of the
+[Patina](https://github.com/Sector-F-Labs/patina) desktop's shell pieces and of
+[patina-launcher](https://github.com/Sector-F-Labs/patina-launcher), and works on any
+compositor with layer shell: sway, Hyprland, river, KDE, COSMIC, Patina's own.
 
-## What it gives the pieces
+eframe only makes ordinary windows; a desktop piece needs a surface anchored to an edge, on a
+layer above or below the windows, taking the keyboard or not. That's what this crate does.
 
-- **A layer-shell host for egui** (`host.rs`, ADR-0003, ADR-0011). eframe only makes ordinary
-  windows; desktop pieces need wlr-layer-shell surfaces anchored to an edge, on a layer, with
-  or without the keyboard. A piece implements `Shell` (its UI) and passes `Options` (anchor,
-  size, layer, keyboard, one surface per output or one, click-through, lock); `Host::connect`
-  and `Host::run` do the rest. With `Options::lock` the host draws on ext-session-lock surfaces
-  instead, for patina-lock. With `Options::window_fallback`, a compositor without layer shell
-  (GNOME) gets a borderless, maximised, transparent window with the shell centred in it; only the
-  launcher asks for this.
-- **A software painter** (`raster.rs`, ADR-0002): egui's meshes drawn on the CPU into wl_shm
-  buffers. Pieces are small or rarely change, and this needs no GPU or GL driver, so they work
-  in VMs and on any compositor. `scale.rs` draws at the output's exact fractional scale.
-- **One copy per display** (`piece.rs`): `Single::start` makes a second run of a piece tell the
-  first over a socket in `XDG_RUNTIME_DIR` (`<name>-<display>.sock`) and exit, so one button
-  toggles a menu and a key keeps a flash up.
-- **The bar's look, for every piece** (`bar.rs`, `piece.rs`): the skin and the edge the bar is
-  on, from `PATINA_SKIN` and `PATINA_BAR_EDGE` (which the bar sets when it opens a piece) or the
-  bar's config file (when the compositor does). `set_skin` and `set_wallpaper` write the bar's
-  config for patina-menu; the bar and wallpaper follow the file.
-- **What the tray and menus read and change:** `audio.rs` (volume through `wpctl`), `network.rs`
-  (Wi-Fi through NetworkManager on the system bus, with zbus, ADR-0022), `power.rs` (the battery
-  from sysfs, ADR-0024), `backlight.rs` (sysfs to read, logind's SetBrightness to set, ADR-0020;
-  the compositor uses it too).
-- **Shared drawing:** `icons.rs` (small icons drawn from shapes in skin colours), `logo.rs` (the
-  Sector F flask and Ubuntu Mono, for the launcher button and the default wallpaper),
-  `toplevels.rs` (the client side of wlr-foreign-toplevel-management, for the bar's tabs).
+```rust
+use patina_shell::{Anchor, Host, KeyboardInteractivity, Layer, Options, Shell};
 
-## Trying it
+struct Hello;
 
-`cargo run -p patina-shell --example wifi` prints what `network.rs` reads from NetworkManager.
+impl Shell for Hello {
+    fn setup(&mut self, ctx: &egui::Context) {}
+    fn ui(&mut self, ui: &mut egui::Ui, _output: &str) {
+        ui.heading("Hello");
+    }
+}
 
-The Linux-only parts (`backlight.rs` through logind, `network.rs`, `audio.rs`) build everywhere
-and do nothing where their service is missing.
+let options = Options {
+    namespace: "hello".into(),
+    layer: Layer::Overlay,
+    anchor: Anchor::empty(),          // none centres it
+    size: (360, 140),
+    exclusive_zone: 0,
+    margin: (0, 0, 0, 0),
+    keyboard: KeyboardInteractivity::Exclusive,
+    per_output: false,
+    toplevels: false,
+    click_through: false,
+    lock: false,
+    window_fallback: true,
+};
+let (host, event_loop) = Host::connect(options, Hello)?;
+host.run(event_loop)?;
+```
+
+`cargo run --example hello` shows it (`make example`).
+
+## What's in it
+
+- **`Host`** (`host.rs`): makes the surfaces from `Options` (anchor, size, layer, margins,
+  exclusive zone, keyboard, one per output or one, click-through) and drives them: outputs,
+  fractional scale (`scale.rs`, wp_fractional_scale and wp_viewporter), pointer and keyboard
+  into egui, frame callbacks, repaints when egui asks.
+  - With `lock`, ext-session-lock surfaces instead, one per output, for a lock screen that
+    unlocks when the shell finishes.
+  - With `window_fallback`, a compositor without layer shell (GNOME) gets an ordinary window
+    instead: borderless, maximised and transparent, with the shell centred in it, and a click
+    around it or closing the window ending it, as wofi or Spotlight behave.
+- **`raster`**: a small CPU renderer for egui's meshes into wl_shm buffers. Desktop pieces are
+  small or rarely change, and this needs no GPU, EGL or GL driver, so it works in VMs and on
+  software-rendered compositors alike.
+- **`piece`**: one running copy per Wayland display. A second run tells the first a word (to
+  close, to flash) over a socket in `XDG_RUNTIME_DIR` and exits, so one key or button toggles a
+  menu.
+- **`bar`**: the Patina bar's conventions every piece follows: its skin and edge from
+  `PATINA_SKIN` and `PATINA_BAR_EDGE`, or from `~/.config/patina-bar/config.toml`, and writing
+  `skin` and `wallpaper` there.
+- **`toplevels`**: the open windows through wlr-foreign-toplevel-management, for a window list.
+
+Skins are [Patina](https://github.com/Sector-F-Labs/patina)'s, so pieces look like Patina apps.
+
+## Use
+
+Not on crates.io; depend on it from GitHub. It uses Patina's `develop` branch, so depend on
+that too, for the skins to be the same crate:
+
+```toml
+patina-shell = { git = "https://github.com/Sector-F-Labs/patina-shell" }
+patina-ui = { git = "https://github.com/Sector-F-Labs/patina", branch = "develop" }
+egui = "0.35"
+```
+
+## Develop
+
+`make check`: tests and clippy. BSD-3-Clause.
