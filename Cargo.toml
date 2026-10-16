@@ -12,8 +12,6 @@ name = "patina_shell"
 [dependencies]
 egui = "0.35"
 patina-ui = { workspace = true }
-resvg = { version = "0.48.1", default-features = false }
-zbus = "5"
 smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop", "xkbcommon"] }
 
 [dev-dependencies]
