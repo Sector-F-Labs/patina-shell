@@ -46,7 +46,10 @@ host.run(event_loop)?;
 - **`Host`** (`host.rs`): makes the surfaces from `Options` (anchor, size, layer, margins,
   exclusive zone, keyboard, one per output or one, click-through) and drives them: outputs,
   fractional scale (`scale.rs`, wp_fractional_scale and wp_viewporter), pointer and keyboard
-  into egui, frame callbacks, repaints when egui asks.
+  into egui, frame callbacks, repaints when egui asks. A shell can size its surfaces to what it
+  shows (`Shell::wanted_size`), and learn its output's size (`output_size`) to know where on the
+  screen something centred is; `set_anchor`, `set_margin`, `set_size` and `set_exclusive_zone`
+  move a surface while it runs.
   - With `lock`, ext-session-lock surfaces instead, one per output, for a lock screen that
     unlocks when the shell finishes.
   - With `window_fallback`, a compositor without layer shell (GNOME) gets an ordinary window
@@ -57,7 +60,9 @@ host.run(event_loop)?;
   software-rendered compositors alike.
 - **`piece`**: one running copy per Wayland display. A second run tells the first a word (to
   close, to flash) over a socket in `XDG_RUNTIME_DIR` and exits, so one key or button toggles a
-  menu.
+  menu. `opening` places a piece at the bar's button that opened it (`PATINA_OPEN_AT`,
+  `edge,x,y[,far]`), turned towards the side of the screen with more room, or on the bar's
+  edge without it.
 - **`bar`**: the Patina bar's conventions every piece follows: its skin and edge from
   `PATINA_SKIN` and `PATINA_BAR_EDGE`, or from `~/.config/patina-bar/config.toml`, and writing
   `skin` and `wallpaper` there.

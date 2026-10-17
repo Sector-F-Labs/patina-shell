@@ -13,6 +13,6 @@ pub mod raster;
 mod scale;
 pub mod toplevels;
 
-pub use host::{Anchor, Host, KeyboardInteractivity, Layer, Options, Shell};
+pub use host::{Anchor, Host, KeyboardInteractivity, Layer, Options, Shell, output_size};
 pub use smithay_client_toolkit::reexports::calloop;
 pub use toplevels::{Toplevel, ToplevelRequest};

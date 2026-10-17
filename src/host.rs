@@ -72,6 +72,16 @@ use smithay_client_toolkit::reexports::protocols::wp::{
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
 
+fn output_size_id() -> egui::Id {
+    egui::Id::new("patina-shell-output-size")
+}
+
+/// The size of the output a surface is on, in logical pixels, if the
+/// compositor says: for a surface centred on an edge to know where it is.
+pub fn output_size(ctx: &egui::Context) -> Option<egui::Vec2> {
+    ctx.data(|d| d.get_temp(output_size_id()))
+}
+
 /// What a host draws.
 pub trait Shell: 'static {
     /// Called for each new egui context, before its first frame, e.g. to
@@ -95,6 +105,12 @@ pub trait Shell: 'static {
     /// Windows to activate or close, collected during `ui`.
     fn take_toplevel_requests(&mut self) -> Vec<ToplevelRequest> {
         Vec::new()
+    }
+    /// The size the surfaces should be, in logical pixels, if the shell
+    /// sizes them to what it shows (a dock as wide as its windows); checked
+    /// after every frame, and the surfaces resized when it changes.
+    fn wanted_size(&self) -> Option<(u32, u32)> {
+        None
     }
 }
 
@@ -318,6 +334,11 @@ impl<S: Shell> Host<S> {
                 }
             }
             self.draw_dirty();
+            if let Some(size) = self.shell.wanted_size()
+                && size != self.options.size
+            {
+                self.set_size(size);
+            }
             self.send_toplevel_requests();
             if self.shell.finished() || self.dismissed {
                 self.unlock();
@@ -379,6 +400,29 @@ impl<S: Shell> Host<S> {
         }
     }
 
+    /// Resizes the surfaces, in logical pixels; 0 stretches between
+    /// opposite anchors.
+    pub fn set_size(&mut self, size: (u32, u32)) {
+        self.options.size = size;
+        for s in &self.surfaces {
+            if let Role::Layer(layer) = &s.role {
+                layer.set_size(size.0, size.1);
+                layer.commit();
+            }
+        }
+    }
+
+    /// Changes the space reserved at the anchored edge.
+    pub fn set_exclusive_zone(&mut self, zone: i32) {
+        self.options.exclusive_zone = zone;
+        for s in &self.surfaces {
+            if let Role::Layer(layer) = &s.role {
+                layer.set_exclusive_zone(zone);
+                layer.commit();
+            }
+        }
+    }
+
     /// Redraws every surface, e.g. after the shell's state changed.
     pub fn redraw_all(&mut self) {
         for s in &mut self.surfaces {
@@ -417,9 +461,21 @@ impl<S: Shell> Host<S> {
             modifiers,
             options,
             dismissed,
+            output_state,
             ..
         } = self;
         let s = &mut surfaces[i];
+        // The output's size, for a shell that places things on the screen
+        // from a surface it can't see the position of (see `output_size`).
+        if let Some((w, h)) = s
+            .output
+            .as_ref()
+            .and_then(|o| output_state.info(o))
+            .and_then(|info| info.logical_size)
+        {
+            let size = egui::vec2(w as f32, h as f32);
+            s.ctx.data_mut(|d| d.insert_temp(output_size_id(), size));
+        }
         s.dirty = false;
         let scale = s.scale.max(1);
         // The exact scale where the compositor gives one, else the integer.
