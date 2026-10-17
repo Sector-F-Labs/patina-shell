@@ -353,6 +353,18 @@ impl<S: Shell> Host<S> {
         }
     }
 
+    /// Moves the surfaces to `anchor`: a bar going to the other edge of
+    /// the screen. The compositor moves its exclusive zone with it.
+    pub fn set_anchor(&mut self, anchor: Anchor) {
+        self.options.anchor = anchor;
+        for s in &self.surfaces {
+            if let Role::Layer(layer) = &s.role {
+                layer.set_anchor(anchor);
+                layer.commit();
+            }
+        }
+    }
+
     /// Redraws every surface, e.g. after the shell's state changed.
     pub fn redraw_all(&mut self) {
         for s in &mut self.surfaces {
