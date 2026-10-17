@@ -365,6 +365,20 @@ impl<S: Shell> Host<S> {
         }
     }
 
+    /// Changes the space between the surfaces and the edges they're
+    /// anchored to: top, right, bottom, left. A bar given a margin floats
+    /// off the screen's edge, and the compositor adds it to the bar's
+    /// exclusive zone.
+    pub fn set_margin(&mut self, margin: (i32, i32, i32, i32)) {
+        self.options.margin = margin;
+        for s in &self.surfaces {
+            if let Role::Layer(layer) = &s.role {
+                layer.set_margin(margin.0, margin.1, margin.2, margin.3);
+                layer.commit();
+            }
+        }
+    }
+
     /// Redraws every surface, e.g. after the shell's state changed.
     pub fn redraw_all(&mut self) {
         for s in &mut self.surfaces {
