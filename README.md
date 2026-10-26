@@ -45,8 +45,8 @@ host.run(event_loop)?;
 
 - **`Host`** (`host.rs`): makes the surfaces from `Options` (anchor, size, layer, margins,
   exclusive zone, keyboard, one per output or one, click-through) and drives them: outputs,
-  fractional scale (`scale.rs`, wp_fractional_scale and wp_viewporter), pointer and keyboard
-  into egui, frame callbacks, repaints when egui asks. A shell can size its surfaces to what it
+  fractional scale (`scale.rs`, wp_fractional_scale and wp_viewporter), pointer, keyboard and
+  touch into egui (each finger an egui touch, the first one egui's pointer too, so taps press), frame callbacks, repaints when egui asks. A shell can size its surfaces to what it
   shows (`Shell::wanted_size`), and learn its output's size (`output_size`) to know where on the
   screen something centred is; `set_anchor`, `set_margin`, `set_size` and `set_exclusive_zone`
   move a surface while it runs.

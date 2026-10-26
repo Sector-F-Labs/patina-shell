@@ -25,7 +25,9 @@ use smithay_client_toolkit::{
         client::{
             Connection, QueueHandle,
             globals::registry_queue_init,
-            protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+            protocol::{
+                wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface, wl_touch,
+            },
         },
         protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
             Shape, WpCursorShapeDeviceV1,
@@ -39,6 +41,7 @@ use smithay_client_toolkit::{
         pointer::{
             PointerEvent, PointerEventKind, PointerHandler, cursor_shape::CursorShapeManager,
         },
+        touch::TouchHandler,
     },
     session_lock::{
         SessionLock, SessionLockHandler, SessionLockState, SessionLockSurface,
@@ -232,6 +235,13 @@ pub struct Host<S: Shell> {
     cursor_shape: Option<CursorShapeManager>,
     pointer: Option<(wl_pointer::WlPointer, Option<WpCursorShapeDeviceV1>)>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    touch: Option<wl_touch::WlTouch>,
+    /// The fingers down: each one's id, the surface it went down on and
+    /// where it is last, since wl_touch says the surface only on down and
+    /// where only on down and motion.
+    touches: Vec<(i32, wl_surface::WlSurface, egui::Pos2)>,
+    /// The finger that is egui's pointer: the first down while none were.
+    pointer_touch: Option<i32>,
     modifiers: egui::Modifiers,
     surfaces: Vec<Surface>,
     start: Instant,
@@ -296,6 +306,9 @@ impl<S: Shell> Host<S> {
             cursor_shape: CursorShapeManager::bind(&globals, &qh).ok(),
             pointer: None,
             keyboard: None,
+            touch: None,
+            touches: Vec::new(),
+            pointer_touch: None,
             modifiers: egui::Modifiers::default(),
             surfaces: Vec::new(),
             start: Instant::now(),
@@ -964,6 +977,9 @@ impl<S: Shell> SeatHandler for Host<S> {
                     .get_keyboard_with_repeat(qh, &seat, None, self.loop_handle.clone(), repeat)
                     .ok();
             }
+            Capability::Touch if self.touch.is_none() => {
+                self.touch = self.seat_state.get_touch(qh, &seat).ok();
+            }
             _ => {}
         }
     }
@@ -988,6 +1004,13 @@ impl<S: Shell> SeatHandler for Host<S> {
                 if let Some(keyboard) = self.keyboard.take() {
                     keyboard.release();
                 }
+            }
+            Capability::Touch => {
+                if let Some(touch) = self.touch.take() {
+                    touch.release();
+                }
+                self.touches.clear();
+                self.pointer_touch = None;
             }
             _ => {}
         }
@@ -1129,6 +1152,151 @@ impl<S: Shell> PointerHandler for Host<S> {
                 s.dirty = true;
             }
         }
+    }
+}
+
+/// The touchscreen (patina-desktop's ADR-0094): every finger reaches egui as
+/// a touch, and the first one down also moves and presses egui's pointer,
+/// as egui-winit does, since egui's widgets answer only to the pointer.
+impl<S: Shell> TouchHandler for Host<S> {
+    fn down(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: u32,
+        _: u32,
+        surface: wl_surface::WlSurface,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        let pos = egui::pos2(position.0 as f32, position.1 as f32);
+        self.touches.retain(|(t, ..)| *t != id);
+        self.touches.push((id, surface.clone(), pos));
+        let as_pointer = self.pointer_touch.is_none();
+        if as_pointer {
+            self.pointer_touch = Some(id);
+        }
+        let modifiers = self.modifiers;
+        if let Some(s) = self.surface_mut(&surface) {
+            s.events.push(touch_event(id, egui::TouchPhase::Start, pos));
+            if as_pointer {
+                s.events.push(egui::Event::PointerMoved(pos));
+                s.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                });
+            }
+            s.dirty = true;
+        }
+    }
+
+    fn up(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: u32,
+        _: u32,
+        id: i32,
+    ) {
+        let Some(i) = self.touches.iter().position(|(t, ..)| *t == id) else {
+            return;
+        };
+        let (_, surface, pos) = self.touches.remove(i);
+        let as_pointer = self.pointer_touch == Some(id);
+        if as_pointer {
+            self.pointer_touch = None;
+        }
+        let modifiers = self.modifiers;
+        if let Some(s) = self.surface_mut(&surface) {
+            s.events.push(touch_event(id, egui::TouchPhase::End, pos));
+            if as_pointer {
+                s.events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                });
+                // Gone, so nothing stays hovered under a lifted finger.
+                s.events.push(egui::Event::PointerGone);
+            }
+            s.dirty = true;
+        }
+    }
+
+    fn motion(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: u32,
+        id: i32,
+        position: (f64, f64),
+    ) {
+        let pos = egui::pos2(position.0 as f32, position.1 as f32);
+        let Some((_, surface, last)) = self.touches.iter_mut().find(|(t, ..)| *t == id) else {
+            return;
+        };
+        *last = pos;
+        let surface = surface.clone();
+        let as_pointer = self.pointer_touch == Some(id);
+        if let Some(s) = self.surface_mut(&surface) {
+            s.events.push(touch_event(id, egui::TouchPhase::Move, pos));
+            if as_pointer {
+                s.events.push(egui::Event::PointerMoved(pos));
+            }
+            s.dirty = true;
+        }
+    }
+
+    fn shape(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: i32,
+        _: f64,
+        _: f64,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_touch::WlTouch,
+        _: i32,
+        _: f64,
+    ) {
+    }
+
+    /// The compositor took the fingers (a gesture of its own): every touch
+    /// ends without a release, so nothing is clicked.
+    fn cancel(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_touch::WlTouch) {
+        let touches = std::mem::take(&mut self.touches);
+        let pointer = self.pointer_touch.take();
+        for (id, surface, pos) in touches {
+            if let Some(s) = self.surface_mut(&surface) {
+                s.events.push(touch_event(id, egui::TouchPhase::Cancel, pos));
+                if pointer == Some(id) {
+                    s.events.push(egui::Event::PointerGone);
+                }
+                s.dirty = true;
+            }
+        }
+    }
+}
+
+fn touch_event(id: i32, phase: egui::TouchPhase, pos: egui::Pos2) -> egui::Event {
+    egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(id as u64),
+        phase,
+        pos,
+        force: None,
     }
 }
 
