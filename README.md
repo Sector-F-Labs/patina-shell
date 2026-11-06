@@ -1,3 +1,5 @@
+> **Moved.** This project now lives in [patina-desktop](https://github.com/Sector-F-Labs/patina-desktop/tree/master/shell), in the `shell/` folder, with its history. This repository is no longer updated.
+
 # patina-shell
 
 Desktop pieces in [egui](https://github.com/emilk/egui): a bar, a launcher, a menu or a lock
